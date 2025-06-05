@@ -9,7 +9,7 @@ from flask import Flask, request
 npNaN = np.nan
 
 # 初始化 Flask 应用
-app = Flask(name)
+app = Flask(__name__)
 
 # 从环境变量中获取配置
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
