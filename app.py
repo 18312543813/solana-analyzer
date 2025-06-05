@@ -1,86 +1,80 @@
-import os
-import requests
+from flask import Flask, request
+from telegram import Bot, Update
+from telegram.ext import Dispatcher, CommandHandler, MessageHandler, filters
 import pandas as pd
 import pandas_ta as ta
-from flask import Flask, request
-from telegram import Bot
+import requests
+import logging
+import os
 
-# 配置环境变量（Render 中设置）
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-HELIUS_API_KEY = os.environ.get("HELIUS_API_KEY")
-
+# 启动 Flask 应用
 app = Flask(__name__)
-bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
+# Telegram 机器人密钥
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+bot = Bot(token=TOKEN)
 
-def fetch_kline_data(mint_address):
-    url = f"https://api.helius.xyz/v0/tokens/{mint_address}/price?api-key={HELIUS_API_KEY}"
+# 初始化调度器
+dispatcher = Dispatcher(bot=bot, update_queue=None, use_context=True)
+
+# Helius API 配置
+HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
+
+def fetch_candlestick_data(token_address):
+    url = f"https://api.helius.xyz/v1/token/{token_address}/candlesticks?api-key={HELIUS_API_KEY}&timeframe=5m&limit=100"
     response = requests.get(url)
-    if response.status_code != 200:
+    if response.status_code == 200:
+        data = response.json()
+        df = pd.DataFrame(data)
+        df['time'] = pd.to_datetime(df['startTime'])
+        df.set_index('time', inplace=True)
+        return df
+    else:
         return None
 
-    data = response.json()
-    # 假设返回的是历史价格列表
-    prices = data.get("prices", [])
-    if not prices:
-        return None
+def analyze_token(token_address):
+    df = fetch_candlestick_data(token_address)
+    if df is None or df.empty:
+        return "无法获取 K 线数据，请检查合约地址是否正确。"
 
-    df = pd.DataFrame(prices)
-    df['close'] = df['price']
-    df['time'] = pd.to_datetime(df['timestamp'], unit='s')
-    df.set_index('time', inplace=True)
-    return df
-
-
-def analyze(df):
     df['rsi'] = ta.rsi(df['close'], length=14)
     df['macd'] = ta.macd(df['close'])['MACD_12_26_9']
-    df['kdj'] = ta.stoch(df['close'])
-    df['ma20'] = ta.sma(df['close'], length=20)
-    df['boll_upper'] = ta.bbands(df['close'])['BBU_20_2.0']
-    df['boll_lower'] = ta.bbands(df['close'])['BBL_20_2.0']
+    df['signal'] = ta.macd(df['close'])['MACDs_12_26_9']
+    df['hist'] = ta.macd(df['close'])['MACDh_12_26_9']
 
-    latest = df.iloc[-1]
-    return {
-        'RSI': round(latest['rsi'], 2),
-        'MACD': round(latest['macd'], 6),
-        'K': round(latest['kdj']['STOCHk_14_3_3'], 2),
-        'D': round(latest['kdj']['STOCHd_14_3_3'], 2),
-        'MA20': round(latest['ma20'], 6),
-        'BOLL上轨': round(latest['boll_upper'], 6),
-        'BOLL下轨': round(latest['boll_lower'], 6)
-    }
+    last = df.iloc[-1]
+    summary = (
+        f"📊 分析结果:\n"
+        f"RSI: {last['rsi']:.2f}\n"
+        f"MACD: {last['macd']:.4f}\n"
+        f"Signal: {last['signal']:.4f}\n"
+        f"Histogram: {last['hist']:.4f}\n"
+    )
+    return summary
 
+def handle_message(update: Update, context):
+    token_address = update.message.text.strip()
+    result = analyze_token(token_address)
+    context.bot.send_message(chat_id=update.effective_chat.id, text=result)
 
-@app.route('/', methods=['GET'])
-def home():
-    return "Solana Analyzer Bot is running."
+def start(update: Update, context):
+    context.bot.send_message(chat_id=update.effective_chat.id, text="欢迎使用 Solana 分析机器人，请发送代币合约地址进行分析。")
 
+# 添加处理器
+dispatcher.add_handler(CommandHandler("start", start))
+dispatcher.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-@app.route(f"/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
-def webhook():
-    update = request.get_json()
-    if "message" not in update:
-        return "ok"
-
-    message = update["message"]
-    chat_id = message["chat"]["id"]
-    text = message.get("text", "").strip()
-
-    if text.startswith("So111") or len(text) > 20:
-        df = fetch_kline_data(text)
-        if df is None:
-            bot.send_message(chat_id=chat_id, text="❌ 获取数据失败，检查合约地址或稍后重试。")
-            return "ok"
-
-        result = analyze(df)
-        reply = "\n".join(f"{k}: {v}" for k, v in result.items())
-        bot.send_message(chat_id=chat_id, text=f"✅ 分析结果：\n{reply}")
-    else:
-        bot.send_message(chat_id=chat_id, text="请发送 Solana 合约地址进行分析。")
-
+# Flask 路由
+@app.route(f"/{TOKEN}", methods=["POST"])
+def telegram_webhook():
+    update = Update.de_json(request.get_json(force=True), bot)
+    dispatcher.process_update(update)
     return "ok"
 
+@app.route("/", methods=["GET"])
+def index():
+    return "Solana 分析机器人运行中"
 
+# 启动入口
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
