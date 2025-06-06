@@ -1,86 +1,40 @@
-from flask import Flask, request
-from telegram import Bot, Update
-from telegram.ext import Dispatcher, CommandHandler, MessageHandler, filters
-import pandas as pd
-import pandas_ta as ta
-import requests
 import logging
+from flask import Flask, request
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# 启动 Flask 应用
-app = Flask(__name__)
-
-# 直接写入你的 Telegram 机器人 Token（调试用，部署后建议改回 os.getenv）
-TOKEN = "8151561242:AAGMbaA1TDBH1Ohb2gotSVy-mpEzERc2Av4"
-bot = Bot(token=TOKEN)
-
-# 初始化 Dispatcher
-dispatcher = Dispatcher(bot=bot, update_queue=None, use_context=True)
-
-# Helius API 配置（推荐仍用环境变量，便于私密保存）
+from analysis import analyze_token  # 假设你的分析逻辑在 analysis.py 里
 import os
-HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
 
-# 获取 Solana 代币 K 线数据
-def fetch_candlestick_data(token_address):
-    url = f"https://api.helius.xyz/v1/token/{token_address}/candlesticks?api-key={HELIUS_API_KEY}&timeframe=5m&limit=100"
-    response = requests.get(url)
-    if response.status_code == 200:
-        data = response.json()
-        df = pd.DataFrame(data)
-        df['time'] = pd.to_datetime(df['startTime'])
-        df.set_index('time', inplace=True)
-        return df
-    else:
-        return None
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+app = Flask(__name__)
+application = Application.builder().token(TOKEN).build()
 
-# 分析函数
-def analyze_token(token_address):
-    df = fetch_candlestick_data(token_address)
-    if df is None or df.empty:
-        return "❌ 无法获取 K 线数据，请检查合约地址是否正确。"
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-    df['rsi'] = ta.rsi(df['close'], length=14)
-    macd = ta.macd(df['close'])
-    df['macd'] = macd['MACD_12_26_9']
-    df['signal'] = macd['MACDs_12_26_9']
-    df['hist'] = macd['MACDh_12_26_9']
+# 指令处理器
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("请发送 Solana 合约地址，我将为你分析代币。")
 
-    last = df.iloc[-1]
-    summary = (
-        f"📊 分析结果:\n"
-        f"RSI: {last['rsi']:.2f}\n"
-        f"MACD: {last['macd']:.4f}\n"
-        f"Signal: {last['signal']:.4f}\n"
-        f"Histogram: {last['hist']:.4f}\n"
-    )
-    return summary
-
-# 处理消息
-def handle_message(update: Update, context):
-    token_address = update.message.text.strip()
-    result = analyze_token(token_address)
-    context.bot.send_message(chat_id=update.effective_chat.id, text=result)
-
-# /start 命令
-def start(update: Update, context):
-    context.bot.send_message(chat_id=update.effective_chat.id, text="欢迎使用 Solana 分析机器人，请发送代币合约地址进行分析。")
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    address = update.message.text.strip()
+    result = analyze_token(address)
+    await update.message.reply_text(result)
 
 # 添加处理器
-dispatcher.add_handler(CommandHandler("start", start))
-dispatcher.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+application.add_handler(CommandHandler("start", start))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# Webhook 路由
-@app.route(f"/{TOKEN}", methods=["POST"])
-def telegram_webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
-    dispatcher.process_update(update)
-    return "ok"
+# Flask 路由，用于 Render 启动服务
+@app.route('/')
+def home():
+    return "Telegram Solana 分析机器人已上线。"
 
-# 首页路由
-@app.route("/", methods=["GET"])
-def index():
-    return "✅ Solana 分析机器人正在运行..."
+# 启动 Telegram bot（异步）
+@app.before_first_request
+def run_telegram_bot():
+    import threading
+    threading.Thread(target=application.run_polling, daemon=True).start()
 
-# 启动入口
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+if __name__ == '__main__':
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
