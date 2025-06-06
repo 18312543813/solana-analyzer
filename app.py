@@ -1,67 +1,84 @@
-import os
-import requests
 from flask import Flask, request
 from telegram import Update, Bot
-from telegram.ext import Dispatcher, CommandHandler, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes
+from telegram.ext import filters
+import pandas as pd
+import pandas_ta as ta
+import requests
+import os
+import asyncio
 
+# Flask 应用
 app = Flask(__name__)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# 读取环境变量
+TOKEN = os.getenv("TELEGRAM_TOKEN")
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
 
-if not BOT_TOKEN or not HELIUS_API_KEY:
-    raise Exception("请在环境变量中设置 BOT_TOKEN 和 HELIUS_API_KEY")
+# 初始化 Telegram Bot 应用（v20+ 新结构）
+application = Application.builder().token(TOKEN).build()
+bot = Bot(token=TOKEN)
 
-bot = Bot(token=BOT_TOKEN)
-dispatcher = Dispatcher(bot=bot, update_queue=None, use_context=True)
-
-def start(update: Update, context):
-    update.message.reply_text(
-        "欢迎！发送 Solana 代币合约地址，我帮你查询实时行情。"
-    )
-
-def fetch_solana_token_price(contract_address: str):
-    # 调用 Helius API 获取最新价格
-    # 注意：Helius 本身不直接提供价格接口，这里示例用 Solana RPC + 一些公共接口
-    # 你需要替换成你有的接口或自己搭价格数据，下面仅做示范
-    url = f"https://api.helius.xyz/v0/tokens/metadata?api-key={HELIUS_API_KEY}"
-    # 实际调用请改成真实价格接口，这里示例简单查询元数据
-    params = {"mint": contract_address}
-    try:
-        response = requests.get(url, params=params, timeout=10)
+# 获取 Solana K 线数据
+def fetch_candlestick_data(token_address):
+    url = f"https://api.helius.xyz/v1/token/{token_address}/candlesticks?api-key={HELIUS_API_KEY}&timeframe=5m&limit=100"
+    response = requests.get(url)
+    if response.status_code == 200:
         data = response.json()
-        if data and "metadata" in data:
-            meta = data["metadata"][0]
-            name = meta.get("name", "未知")
-            symbol = meta.get("symbol", "未知")
-            return f"代币名称：{name}\n代币符号：{symbol}\n（这里只是示范，需接真实行情接口）"
-        else:
-            return "未找到该代币的元数据，请确认合约地址正确。"
-    except Exception as e:
-        return f"查询失败: {e}"
-
-def handle_message(update: Update, context):
-    text = update.message.text.strip()
-    # 简单判断是否可能是合约地址（长度44左右）
-    if len(text) == 44:
-        reply = fetch_solana_token_price(text)
+        df = pd.DataFrame(data)
+        df['time'] = pd.to_datetime(df['startTime'])
+        df.set_index('time', inplace=True)
+        return df
     else:
-        reply = "请发送有效的 Solana 代币合约地址（44字符左右）"
-    update.message.reply_text(reply)
+        return None
 
-dispatcher.add_handler(CommandHandler("start", start))
-dispatcher.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+# 分析逻辑
+def analyze_token(token_address):
+    df = fetch_candlestick_data(token_address)
+    if df is None or df.empty:
+        return "无法获取 K 线数据，请检查合约地址是否正确。"
 
-@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+    df['rsi'] = ta.rsi(df['close'], length=14)
+    macd = ta.macd(df['close'])
+    df['macd'] = macd['MACD_12_26_9']
+    df['signal'] = macd['MACDs_12_26_9']
+    df['hist'] = macd['MACDh_12_26_9']
+
+    last = df.iloc[-1]
+    summary = (
+        f"📊 分析结果:\n"
+        f"RSI: {last['rsi']:.2f}\n"
+        f"MACD: {last['macd']:.4f}\n"
+        f"Signal: {last['signal']:.4f}\n"
+        f"Histogram: {last['hist']:.4f}\n"
+    )
+    return summary
+
+# 指令 /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("欢迎使用 Solana 分析机器人，请发送合约地址。")
+
+# 接收普通消息
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    token_address = update.message.text.strip()
+    result = analyze_token(token_address)
+    await update.message.reply_text(result)
+
+# 添加处理器
+application.add_handler(CommandHandler("start", start))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+# Flask Webhook 路由
+@app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
     update = Update.de_json(request.get_json(force=True), bot)
-    dispatcher.process_update(update)
-    return "OK"
+    asyncio.run(application.process_update(update))
+    return "ok"
 
-@app.route("/")
+@app.route("/", methods=["GET"])
 def index():
-    return "机器人运行正常..."
+    return "机器人运行中..."
 
+# 启动
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=10000)
