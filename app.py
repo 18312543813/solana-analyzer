@@ -1,8 +1,16 @@
 import os
 import asyncio
 from flask import Flask, request, abort
-from telegram import Bot, Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram import Update
+from telegram.ext import (
+    Application,
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    Defaults,
+    filters,
+)
 
 # 初始化 Flask 应用
 app = Flask(__name__)
@@ -16,9 +24,18 @@ if not BOT_TOKEN:
 if not HELIUS_API_KEY:
     raise ValueError("请设置环境变量 HELIUS_API_KEY")
 
-# 初始化 Telegram 应用程序和 Bot
-application = Application.builder().token(BOT_TOKEN).build()
-bot = Bot(token=BOT_TOKEN)
+# ✅ 使用更大的连接池设置防止超时
+application = (
+    ApplicationBuilder()
+    .token(BOT_TOKEN)
+    .concurrent_updates(True)
+    .read_timeout(10)
+    .get_updates_connect_timeout(10)
+    .get_updates_read_timeout(10)
+    .get_updates_pool_timeout(10)
+    .http_version("1.1")
+    .build()
+)
 
 # /start 命令处理器
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -42,13 +59,13 @@ def webhook():
             json_data = request.get_json(force=True)
             print("✅ 收到 Webhook 数据：", json_data)
 
-            update = Update.de_json(json_data, bot)
+            update = Update.de_json(json_data, application.bot)
 
             async def process():
-                await application.initialize()
+                if not application._initialized:
+                    await application.initialize()
                 await application.process_update(update)
 
-            # 使用独立事件循环，避免 asyncio.run 卡死
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(process())
