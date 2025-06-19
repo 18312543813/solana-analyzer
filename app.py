@@ -16,7 +16,7 @@ if not BOT_TOKEN:
 if not HELIUS_API_KEY:
     raise ValueError("请设置环境变量 HELIUS_API_KEY")
 
-# 初始化 Telegram Bot 应用
+# 初始化 Telegram 应用程序和 Bot
 application = Application.builder().token(BOT_TOKEN).build()
 bot = Bot(token=BOT_TOKEN)
 
@@ -30,19 +30,26 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_text = f"收到消息：{text}\n（此处可以写合约分析逻辑）"
     await update.message.reply_text(reply_text)
 
-# 注册处理器
+# 注册命令和消息处理器
 application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), echo))
 
-# Webhook 路由
+# Webhook 路由：用于接收 Telegram 消息
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     if request.method == "POST":
         try:
             json_data = request.get_json(force=True)
             print("✅ 收到 Webhook 数据：", json_data)
+
             update = Update.de_json(json_data, bot)
-            asyncio.run(application.process_update(update))  # 正确处理更新
+
+            async def process():
+                await application.initialize()               # 关键初始化
+                await application.process_update(update)    # 处理消息
+
+            asyncio.run(process())
+
         except Exception as e:
             print(f"❌ Webhook 错误: {e}")
             abort(400)
