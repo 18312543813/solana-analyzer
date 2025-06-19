@@ -1,0 +1,10 @@
+echo "services:
+  - type: web
+    name: solana-analyzer
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:\$PORT" > render.yaml
+git add render.yaml
+git commit -m "add render.yaml to fix deployment"
+git push
