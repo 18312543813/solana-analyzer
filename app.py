@@ -45,10 +45,14 @@ def webhook():
             update = Update.de_json(json_data, bot)
 
             async def process():
-                await application.initialize()               # 关键初始化
-                await application.process_update(update)    # 处理消息
+                await application.initialize()
+                await application.process_update(update)
 
-            asyncio.run(process())
+            # 使用独立事件循环，避免 asyncio.run 卡死
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(process())
+            loop.close()
 
         except Exception as e:
             print(f"❌ Webhook 错误: {e}")
