@@ -1,1 +1,7 @@
-startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
+services:
+  - type: web
+    name: solana-analyzer
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
